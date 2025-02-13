@@ -1,1 +1,1 @@
-from Script2Runner.main import run
+from Script2Runner.pydantic_cli import CLI
