@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 
 setup(
-    name='Script2Runner',
+    name='script2runner',
     packages=find_packages(where='src'),
     # package_data={
     #     "Script2Runner.package_data": ["*"],
