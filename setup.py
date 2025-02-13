@@ -2,14 +2,14 @@ from setuptools import setup, find_packages
 
 
 setup(
-    name='___package_name___',
+    name='Script2Runner',
     packages=find_packages(where='src'),
     package_data={
-        "___package_name___.package_data": ["*"],
+        "Script2Runner.package_data": ["*"],
     },
     entry_points={
         'console_scripts': [
-            '___package_name___ = ___package_name___:run',
+            'Script2Runner = Script2Runner:run',
         ]
     },
     version='0.1',
@@ -18,8 +18,8 @@ setup(
     description_file = "README.md",
     author="Julien Braine",
     author_email='julienbraine@yahoo.fr',
-    url='https://github.com/JulienBrn/___package_name___',
-    download_url = 'https://github.com/JulienBrn/___package_name___.git',
+    url='https://github.com/JulienBrn/Script2Runner',
+    download_url = 'https://github.com/JulienBrn/Script2Runner.git',
     package_dir={'': 'src'},
     keywords=['python'],
     install_requires=[],
