@@ -21,13 +21,6 @@ import datetime as dt
 import logging
 logger = logging.getLogger(__name__)
 
-try:
-    display("script2runner is testing if running in jupyter. conclusion: True")
-    is_jupyter=True
-    display = display
-except:
-    is_jupyter=False
-    display=print
 
 
 def export(data, file, format):
@@ -98,10 +91,17 @@ class Runner(Generic[T]):
     metadata: MetadataInfo = MetadataInfo()
     jupyter_args: Union[Dict[str, Any], None] = None
 
-    def handle_args(self, source=sys.argv) -> T:
+    def handle_args(self, source=sys.argv, is_running_in_jupyter: Union[bool, Literal["auto"]]="auto") -> T:
         if isinstance(source, Mapping):
             return self.args_type(**source) 
-        if is_jupyter:
+        if is_running_in_jupyter =="auto":
+            try:
+                tmp = display
+                is_running_in_jupyter=True
+            except:
+                is_running_in_jupyter=False
+
+        if is_running_in_jupyter:
             return self.args_type(**self.jupyter_args)
         if source!=sys.argv:
             raise Exception("Parsing from other sources than sys.argv or a mapping is not yet supported")
@@ -225,8 +225,15 @@ class Runner(Generic[T]):
 
 
 
-def read_arguments(Args: Type[T], jupyter_args=None) -> T:
-    if is_jupyter:
+def read_arguments(Args: Type[T], jupyter_args=None, is_running_in_jupyer: Union[bool, Literal["auto"]]="auto") -> T:
+    if is_running_in_jupyer =="auto":
+        try:
+            display("script2runner is testing if running in jupyter. conclusion: True")
+            is_running_in_jupyer=True
+        except:
+            is_running_in_jupyer=False
+
+    if is_running_in_jupyer:
       if jupyter_args is None:
           raise Exception("Unknown way of getting arguments...")
       return Args(**jupyter_args)
