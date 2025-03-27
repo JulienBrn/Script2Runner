@@ -1,27 +1,16 @@
 from __future__ import annotations
 from typing_extensions import Self
 from pathlib import Path
-import numpy as np, pandas as pd
-import sys
-from typing import List, Dict, Literal, Optional, Tuple, Type, Any, Union, ClassVar, TypeVar, Callable, Generic, Mapping, final, Set
-from dataclasses import dataclass, field
-from pydantic import BaseModel, TypeAdapter, Field, ValidationError, model_validator, ModelWrapValidatorHandler, ConfigDict, with_config, computed_field
-from pydantic.dataclasses import dataclass as pydantic_dataclass
-from datetime import datetime, date
-import json, yaml
-from pydantic_settings import BaseSettings, SettingsConfigDict, CliSubCommand, SettingsError
-import argparse
-from pydantic_settings import (
-    BaseSettings,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-)
-from pydantic.fields import FieldInfo
-import datetime as dt
-import logging
+import sys, datetime as dt, logging, json, yaml, subprocess, re
+from typing import List, Dict, Literal, Optional, Tuple, Type, Any, Union, ClassVar, TypeVar, Callable, Generic, Mapping, final, Set, Annotated
+from dataclasses import dataclass
+from pydantic import BaseModel, Field, ValidationError, model_validator, ConfigDict, computed_field, AfterValidator, WithJsonSchema
+from pydantic_settings import BaseSettings, CliSubCommand, SettingsError
+from script2runner.validators import PathConstraints, CondaEnv, Version
 logger = logging.getLogger(__name__)
 
-
+def nice_print_pydantic_error(e):
+    return '\n   '.join([l for l in str(e).split('\n')[1:] if not "For further information visit" in l])
 
 def export(data, file, format):
     if format=="auto":
@@ -42,33 +31,41 @@ def export(data, file, format):
             f.write(s)
 
 
-
-class Version(BaseModel):
-    major_version: int
-    minor_version: int
-    patch_number: int
-
 T = TypeVar("T", bound=BaseModel)
+    
+
+class PythonPath(BaseModel):
+    env_type: Literal["from_interpreter_path"] = "from_interpreter_path"
+    python_path: Annotated[Path, PathConstraints(exists=True, suffix="python", pathtype="file")]
+
+class DynamicRunInfo(BaseModel, Generic[T]):
+    nprocs: Union[int, Literal["all", "unknown"]] = "unknown"
+    gpu: Union[bool, Literal["unknown"]] = "unknown"
+    expected_duration: Union[float, Literal["unknown"]] = "unknown"
+    
+    @computed_field
+    @property
+    def python_path(self) -> Path:
+        return Path(sys.executable)
+    
+    model_config = ConfigDict(extra='allow')
+
+
 class RunInfo(BaseModel, Generic[T]):
-    conda_env: Union[str]
+    python_env: Annotated[Union[CondaEnv, PythonPath], Field(discriminator="env_type")]
     nprocs: Union[int, Literal["dynamic", "all", "unknown"]] = "unknown"
     gpu: Union[bool, Literal["dynamic", "unknown"]] = "unknown"
     expected_duration: Union[float, Literal["dynamic", "unknown"]] = "unknown"
 
-    @final
-    def get_dynamic_run_info(self, args: T) -> Self: 
-        from dataclasses import asdict
-        ret = self._dynamic_run_info(args)
-        print(ret, type(ret))
-        for k,v in ret.model_dump().items():
-            if v == "dynamic":
-                Exception(f"dynamic values should not be returned by dynamic_run_info, got dynamic for {k}")
-        return ret
+    def get_dynamic_run_info(self, args: T) -> DynamicRunInfo[T]: 
+        return DynamicRunInfo()
     
     def _dynamic_run_info(self, args: T) -> Self:
         return self
 
     model_config = ConfigDict(extra='allow')
+
+
 
 class MetadataInfo(BaseModel):
     maintainer: Union[str, None] = None
@@ -95,12 +92,8 @@ class Runner(Generic[T]):
         if isinstance(source, Mapping):
             return self.args_type(**source) 
         if is_running_in_jupyter =="auto":
-            try:
-                tmp = display
-                is_running_in_jupyter=True
-            except:
-                is_running_in_jupyter=False
-
+            from script2runner.utils import is_using_jupyter
+            is_running_in_jupyter = is_using_jupyter()
         if is_running_in_jupyter:
             return self.args_type(**self.jupyter_args)
         if source!=sys.argv:
@@ -110,12 +103,11 @@ class Runner(Generic[T]):
             export: bool = False
             output: Union[Path, Literal["stdout"]]= Field(default="stdout", description="File in which to export the run_info")
             format : Literal["json", "yaml", "auto"] = Field(default="auto", description="Format in which to export the run_info")
-            contents: Set[Literal["runinfo", "argsmodel"]] = {"runinfo", "argsmodel"}
+            contents: Set[Literal["runinfo", "argsmodel", "validation_errors"]] = {"runinfo", "argsmodel", "validation_errors"}
 
-            def handle(mself, argsm):
+            def handle(mself, argsmodel):
                 if mself.export:
-                    runinfo = self.run_info.get_dynamic_run_info(argsm).model_dump(mode="json")
-                    argsmodel={k:v for k,v in argsm.model_dump(mode="json").items() if not k in ["config_file", "extra_runinfo"]}
+                    runinfo = self.run_info.get_dynamic_run_info(argsmodel).model_dump(mode="json")
                     data = dict(runinfo=runinfo, argsmodel=argsmodel)
                     data = {k:v for k, v in data.items() if k in mself.contents}
                     if len(data) == 1:
@@ -125,7 +117,7 @@ class Runner(Generic[T]):
         class ArgsWithConfigFile(self.args_type):
             config_file: List[Path] = []
             extra_runinfo: GetDynamicRunInfo = GetDynamicRunInfo()
-            
+    
             @model_validator(mode='wrap')
             @classmethod
             def handle_config(cls, data: Any, handler):
@@ -187,112 +179,15 @@ class Runner(Generic[T]):
             if getattr(a, key):
                 getattr(a, key).handle()
                 exit(0)
-
-        if a.run:
-            a.run.extra_runinfo.handle(a.run)
-            delattr(a.run, "config_file")
-            delattr(a.run, "extra_runinfo")
-            return a.run
-        elif a.dryrun:
-            a.dryrun.extra_runinfo.handle(a.dryrun)
-            exit(0)
-        else:
-            raise Exception("No subcommands provided...")
-        
-        
-        
-        
-        
-        
-        # class GetDynamicRunInfo(ArgsWithConfigFile):
-        #     file: Union[Path, Literal["stdout"]]= Field(default="stdout", description="File in which to export the info")
-        #     format : Literal["json", "yaml", "auto"] = Field(default="auto", description="Format in which to export the run_info")
-        #     def handle(self, mclass):
-        #         data = self.dynamic_run_info
-        #         export(data, self.file, self.format)
-
-        
-
-
-
-
-
-
-
-
-
-
-
-
-
-def read_arguments(Args: Type[T], jupyter_args=None, is_running_in_jupyer: Union[bool, Literal["auto"]]="auto") -> T:
-    if is_running_in_jupyer =="auto":
-        try:
-            display("script2runner is testing if running in jupyter. conclusion: True")
-            is_running_in_jupyer=True
-        except:
-            is_running_in_jupyer=False
-
-    if is_running_in_jupyer:
-      if jupyter_args is None:
-          raise Exception("Unknown way of getting arguments...")
-      return Args(**jupyter_args)
-    else:
-        class ArgsWithConfigFile(Args):
-            config_file: List[Path] = []
-            @model_validator(mode='wrap')
-            @classmethod
-            def handle_config(cls, data: Any, handler):
-                if "config_file" in data:
-                    c = {}
-                    for p in data["config_file"]:
-                        p= Path(p)
-                        if not p.exists():
-                            raise Exception(f"File {p} does not exist")
-                        with p.open("r") as f:
-                            if p.suffix==".json":
-                                d = json.load(f) 
-                            elif p.suffix in [".yml", ".yaml"]:
-                                d = yaml.safe_load(f)
-                            else:
-                                raise Exception(f"Unknown suffix {p.suffix} for file {p}")
-                        c.update(d)
-                    return handler(c | {k:v for k,v in data.items()})
-                else:
-                    return handler(data)
-        class GetDynamicRunInfo(ArgsWithConfigFile):
-            file: Union[Path, Literal["stdout"]]= Field(default="stdout", description="File in which to export the info")
-            format : Literal["json", "yaml", "auto"] = Field(default="auto", description="Format in which to export the run_info")
-            def handle(self, mclass):
-                data = self.dynamic_run_info
-                export(data, self.file, self.format)
-
-        class CLI(BaseSettings, cli_parse_args=True, cli_implicit_flags=True,):
-            run: CliSubCommand[ArgsWithConfigFile]
-            get_schema: CliSubCommand[GetExportSchema] #Allows retrieval of arguments
-            metadata: CliSubCommand[GetMetadata] #Allows retrieval of other information such as author, ...
-            static_run_info: CliSubCommand[GetStaticRunInfo] #Allows retrieval of information on run environment requirements/impact
-            dynamic_run_info: CliSubCommand[GetDynamicRunInfo]
-            check: CliSubCommand[Args]
-        
-        try:
-            a = CLI()
-        except SettingsError as e:
-            print(e)
-            exit(2)
-        except ValidationError as e:
-            err_str = '\n   '.join([l for l in str(e).split('\n')[1:] if not "For further information visit" in l])
-            print(f"Please check your input arguments as the following errors were found.\n   {err_str}")
-            exit(2)
-        for key in ["get_schema", "static_run_info", "metadata", "dynamic_run_info"]:
-            if getattr(a, key):
-                getattr(a, key).handle(Args)
+        r = a.run if a.run else a.dryrun if a.dryrun else None
+        if r:
+            m = self.args_type.model_construct(**{k:v for k,v in r.model_dump().items() if not k in ["config_file", "extra_runinfo"]})
+            r.extra_runinfo.handle(m)
+            if a.dryrun:
                 exit(0)
-        if a.check:
-            exit(0)
-        
-        if a.run:
-            delattr(a.run, "config_file")
-            return a.run
+            return m
         else:
             raise Exception("No subcommands provided...")
+        
+
+
